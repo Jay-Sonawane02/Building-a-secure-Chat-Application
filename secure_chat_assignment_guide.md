@@ -90,8 +90,8 @@ Two separable pieces: the **key exchange** and the **encryption**. DH works like
 **DH from scratch:**
 1. Use a standard RFC 3526 MODP group (e.g. Group 14, 2048-bit) — hardcode the published `p` (hex string) and `g` (usually 2) as constants. Do not generate your own prime.
 2. Represent big numbers with OpenSSL's `BIGNUM`/`BN_*` API — this is allowed as a low-level primitive.
-3. Implement modular exponentiation yourself: square-and-multiply over `BN_mod_mul`/`BN_mod_sqr` (or `BN_mul`+`BN_mod`), looping over the bits of the exponent. **Do not call `BN_mod_exp`** — that's the library doing the modexp for you, which the spec disallows.
-4. Each side: generate private random exponent (`BN_rand`), compute public value `= g^private mod p` via your modexp, exchange public values over the (still plaintext at this point) socket, then each computes `shared = peer_public^my_private mod p`.
+3. **TA clarification on what "implement from scratch" actually means:** the rule is about function *naming*, not about banning `BN_mod_exp`. Anything with "DH" or "Diffie-Hellman" in the name (`DH_generate_key`, `DH_compute_key`, `EVP_PKEY_derive` used for DH) is disallowed, because that's the library running the *entire exchange* for you. `BN_mod_exp` is a generic big-integer primitive, not DH-specific — it's fine to use directly. You are still the one writing the DH protocol logic (picking the exponent, computing public values, exchanging them, deriving the shared secret) — you're just not required to hand-roll square-and-multiply yourself on top of that. (If you want to write your own modexp loop anyway for a deeper report writeup, that's still fine too — just not mandatory.)
+4. Each side: generate private random exponent (`BN_rand`), compute public value `= g^private mod p` via `BN_mod_exp(pub, g, priv, p, ctx)`, exchange public values over the (still plaintext at this point) socket, then each computes `shared = peer_public^my_private mod p` the same way.
 5. **Hash it:** `SHA256(shared_secret_bytes)` → this becomes your AES-256-GCM key. Use `EVP_sha256()` via the EVP API. Never use the raw BIGNUM bytes directly as the AES key.
    - **Why hash it (put this reasoning in your report):** the raw DH output `g^(ab) mod p` isn't uniformly distributed over the AES key space — it's a number with mathematical structure (it will never land on certain values, and its bit distribution isn't ideal for a symmetric key). Hashing it with SHA-256 collapses it into a uniformly-distributed, fixed-length key. This is standard practice — essentially a stripped-down key-derivation-function (KDF) step.
 
@@ -103,9 +103,9 @@ Two separable pieces: the **key exchange** and the **encryption**. DH works like
 **Independent exchanges:** C1↔S and C2↔S must be two separate DH runs with separate private exponents — don't reuse one exchange for both.
 
 ### Tools/libraries
-- OpenSSL `BN_*` (bignum arithmetic — building block for your own modexp)
+- OpenSSL `BN_*` (bignum arithmetic, including `BN_mod_exp` directly — allowed per TA clarification, see above)
 - OpenSSL `EVP_*` (AES-256-GCM, SHA-256)
-- Your own DH/modexp code — this is the graded deliverable, not a library call
+- Your own DH protocol logic (exponent generation, exchange sequencing, shared-secret derivation) — this is the graded deliverable; using `BN_mod_exp` as the underlying primitive is fine, using any `DH_*`/`EVP_PKEY_derive`-for-DH call is not
 
 ### Verification tasks (build these into the code, not just manually)
 1. Print `SHA256(shared_secret)` truncated/hex-encoded as a "fingerprint" on both client and server — never print the raw secret or the AES key. Show they match.
@@ -298,4 +298,4 @@ Your report is one PDF covering all 5 phases plus an LLM-prompt appendix. Sugges
 | 11–12 | Phase 5: rekey timer, collision handling, rotation verification |
 | 13–14 | Report writing, screenshots, final Wireshark captures, buffer for bugs |
 
-Build in slack — Phase 2's modexp-from-scratch and Phase 3's cert/PoP logic are usually where people lose the most time to subtle bugs (endianness in your DH byte encoding, nonce reuse in GCM, cert chain validation edge cases).
+Build in slack — Phase 2's DH protocol logic and Phase 3's cert/PoP logic are usually where people lose the most time to subtle bugs (endianness in your DH byte encoding, nonce reuse in GCM, cert chain validation edge cases).
