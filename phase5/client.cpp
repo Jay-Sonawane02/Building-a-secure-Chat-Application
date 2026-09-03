@@ -49,8 +49,7 @@ void automatic_rekey_worker(EncryptedChannel& channel, std::string username, std
             std::string rekey_packet = "@" + partner + " __E2E_INIT__" + pub_hex;
             channel.send_message(rekey_packet);
 
-            // Temporarily store pending private key for handshake completion
-            // Update active key upon receiving ACK
+           
             BN_free(kp.public_key);
             BN_free(kp.private_key);
         }
