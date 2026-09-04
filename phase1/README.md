@@ -45,7 +45,7 @@ Once connected, type at the `>` prompt:
 | `/who` | Lists all currently connected usernames |
 | `/quit` | Cleanly disconnects and exits |
 
-## Protocol summary (see comments at the top of server.cpp for full detail)
+## Protocol summary 
 
 - **Framing:** newline-delimited text lines. TCP has no message boundaries,
   so every logical message is one `\n`-terminated line; a message is
@@ -95,10 +95,7 @@ content.
    Phase 2's capture will visibly contrast against (ciphertext instead of
    readable text).
 
-## Known scope limits (documented, not bugs)
 
-- No reconnection/resume logic — a `/quit` or dropped connection ends the
-  session; the client must be restarted to rejoin.
 - No message persistence — if a target user isn't currently online,
   the sender gets `ERR user_not_found <target>` and the message is dropped
   (not queued).
