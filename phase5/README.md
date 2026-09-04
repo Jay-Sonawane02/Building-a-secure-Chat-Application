@@ -35,7 +35,7 @@ g++ -std=c++17 -pthread -Wall -Wextra -o client client.cpp -lssl -lcrypto
   — see "Collision avoidance" below for why.
 - Everything else (`@user`, `/chat`, `/who`, `/quit`) unchanged.
 
-## Design decision: collision avoidance (spec 6.1)
+## Design decision: collision avoidance 
 
 Both clients' 60-second timers will never fire in perfect sync. **Chosen
 approach: asymmetric roles.** Whichever username is lexicographically
@@ -53,7 +53,7 @@ problem the asymmetric-roles approach avoids by construction. Given the
 usernames are fixed for the session's lifetime, there's no scenario where
 the two sides could disagree about who's the initiator.
 
-## Epoch tagging (how messages survive a rotation)
+## Epoch tagging
 
 Every wire message now carries an epoch number:
 ```
@@ -68,7 +68,7 @@ rotation completed. Anything older than that has already been actively
 destroyed (`OPENSSL_cleanse`) and is unrecoverable — which is the actual
 point of forward secrecy, not an oversight.
 
-## Verification (spec 6.2)
+## Verification 
 
 **1. Fingerprint + timestamp across ≥2 rotations.** Use `/rekey` twice in
 a row (after `/e2e`) and confirm both clients' logs show:
@@ -84,7 +84,7 @@ tagged with the epoch it was encrypted under: `[sender (E2E, epoch N)]: ...`
 
 **3. Written explanation (explicitly graded) — see below.**
 
-## What forward secrecy actually buys you (required explanation)
+## What forward secrecy actually buys you 
 
 **In Phase 4 alone**, C1 and C2 use one static E2E session key for the
 entire conversation. If an attacker later compromises that single key —
