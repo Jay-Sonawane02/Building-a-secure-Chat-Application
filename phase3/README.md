@@ -73,8 +73,6 @@ Proof-of-possession verified: server controls the private key matching its certi
 Connected as 'alice' (authenticated + encrypted). ...
 ```
 Cross-check the fingerprint against the server's log, exactly as in Phase 2.
-Screenshot both the client's cert/PoP messages and the server's log —
-this is your "full legitimate flow" evidence.
 
 ## Step 4 — Re-run the MITM attack (spec 4.2, the core deliverable)
 
@@ -98,12 +96,6 @@ Mallory's log shows:
 Sent our self-signed certificate to the victim. Waiting to see if they proceed...
 *** VICTIM DISCONNECTED WITHOUT SENDING ANYTHING FURTHER. ***
 ```
-
-**Screenshot both terminals side by side, and explicitly contrast with your
-Phase 2 MITM screenshots** where the identical "point the victim at
-Mallory" setup fully succeeded. This contrast — same network position, same
-attacker, same victim setup, different outcome — is exactly what spec 4.2
-is asking you to demonstrate.
 
 ## Step 5 — Stolen certificate without the private key (spec 4.2, separate test)
 
@@ -132,27 +124,3 @@ catches this attack, which is exactly the point: a certificate alone only
 proves an identity was vouched for at some point in the past; it does not
 prove who currently controls the matching private key on this live
 connection.
-
-## Report notes to include
-
-- **Why proof-of-possession is needed on top of certificate validation**:
-  a certificate is a static file — anyone who obtains a copy can present
-  it. Signing a fresh, connection-specific nonce with the private key is
-  what ties "presents a valid certificate" to "is the real entity on this
-  specific connection, right now." Step 5's test isolates and demonstrates
-  this distinction directly: cert check passes, PoP check fails.
-- **Why Mallory can't just relay the real certificate**: it could try
-  (Mallory could pass the real `server.crt` through to the victim
-  verbatim, since certificates are public data) — but doing so wouldn't
-  help, because Mallory still can't complete proof-of-possession without
-  `server.key`, which it never has. So the two defenses cover both attack
-  variants: forge-your-own-cert (caught by chain validation) and
-  relay-the-real-cert (caught by PoP).
-- **Direct contrast with Phase 2**: same Mallory VM, same "point the
-  victim at the attacker" setup, same network conditions — Phase 2's
-  attack fully succeeded (captured plaintext, victim's fingerprint check
-  passed), Phase 3's identical setup fails at the very first message
-  (certificate rejected before any DH value or nonce is ever sent).
-- **CA/cert commands used** (from `setup_ca.sh`) — include the actual
-  `openssl genrsa` / `openssl req -x509` / `openssl x509 -req` commands in
-  your report per spec 4.3's deliverable requirement.
