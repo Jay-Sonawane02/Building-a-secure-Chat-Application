@@ -1,49 +1,7 @@
-// Phase 5 - Forward Secrecy
-//
-// Extends Phase 4's E2E session with automatic key rotation every 60
-// seconds. Everything through certificate validation, proof-of-possession,
-// the client-server DH handshake, and the initial /e2e exchange is
-// IDENTICAL to Phase 4 -- see that file's comments. This file adds:
-//
-//   1. A background timer thread that renegotiates the E2E key every 60s.
-//   2. COLLISION AVOIDANCE (spec 6.1): both clients' 60-second timers will
-//      never fire in perfect sync. We use the simplest correct strategy --
-//      asymmetric roles. Whichever username is LEXICOGRAPHICALLY SMALLER
-//      always initiates rekeys; the other peer NEVER initiates on its own
-//      timer, it only ever responds with __E2E_ACK__. Since there is
-//      structurally only ever one initiator for a given pair, there is no
-//      race to resolve -- both sides always agree on who proposes a new
-//      key. (Justification for choosing this over an epoch/timestamp
-//      "highest proposal wins" scheme: this is simpler to reason about and
-//      implement correctly, and is sufficient because the two usernames
-//      are fixed and known to both sides for the lifetime of the session --
-//      there's no scenario here where the comparison result could differ
-//      between the two clients.)
-//   3. EPOCH TAGGING so in-flight messages survive a rotation (spec 6.1's
-//      "ongoing chat should not be disrupted"). Every __E2E_INIT__,
-//      __E2E_ACK__, and __E2E_MSG__ now carries an epoch number:
-//        __E2E_INIT__<epoch>:<hex pub>
-//        __E2E_ACK__<epoch>:<hex pub>
-//        __E2E_MSG__<epoch>:<base64 blob>
-//      Each session keeps its CURRENT key/epoch plus the ONE PREVIOUS
-//      key/epoch. A message tagged with the previous epoch can still be
-//      decrypted (it was likely in flight right as the rotation
-//      completed); anything older than that has been actively destroyed
-//      and is unrecoverable, which is the whole point of forward secrecy.
-//   4. ACTUAL KEY DESTRUCTION: OPENSSL_cleanse() zeroes the old key's
-//      memory before it's dropped, rather than just letting it become
-//      unreachable -- "discarded" per spec 6.1 means actively erased, not
-//      merely dereferenced.
-//   5. A `/rekey username` test command (permitted by spec 1.3's design
-//      note for Phase 5) that forces an immediate rotation without
-//      waiting 60 seconds, for fast, deterministic verification. Only
-//      works if you're the lexicographically-smaller username for that
-//      pair, since that's structurally who's allowed to initiate --
-//      exactly mirroring the real timer's rule.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/bn.h>
-#include <openssl/crypto.h>  // OPENSSL_cleanse
+#include <openssl/crypto.h>  
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -79,7 +37,6 @@ static std::string now_str() {
     return std::string(buf);
 }
 
-// ---- E2E session state, now with epoch + previous-key retention -------
 struct E2ESession {
     uint32_t current_epoch = 0;
     std::vector<uint8_t> current_key;
@@ -100,7 +57,7 @@ struct PendingRekey {
 
 static std::mutex g_e2e_mutex;
 static std::map<std::string, E2ESession> g_e2e_sessions;
-static std::map<std::string, PendingRekey> g_pending;  // keyed by peer username
+static std::map<std::string, PendingRekey> g_pending;  
 
 static std::mutex g_channel_mutex;
 static std::string g_username;
@@ -129,8 +86,7 @@ static bool send_to_server_locked(const std::string &plaintext) {
     return channel::send_encrypted(g_fd, g_server_key, channel::CLIENT_TO_SERVER,
                                     g_server_send_counter, plaintext);
 }
-
-// Actively erase key material rather than merely letting it go out of scope.
+.
 static void destroy_key(std::vector<uint8_t> &key) {
     if (!key.empty()) {
         OPENSSL_cleanse(key.data(), key.size());
@@ -138,9 +94,6 @@ static void destroy_key(std::vector<uint8_t> &key) {
     }
 }
 
-// Sends a fresh __E2E_INIT__ proposing epoch = current_epoch + 1 (or 0 for
-// a brand-new session). Used both by the manual /e2e command and by the
-// automatic rekey timer/the /rekey test command.
 static void initiate_e2e(const std::string &target, uint32_t proposed_epoch) {
     dh::Keypair kp = dh::generate_keypair(g_dh_p, g_dh_g, g_dh_ctx);
     std::string payload = "__E2E_INIT__" + std::to_string(proposed_epoch) + ":" +
@@ -152,7 +105,6 @@ static void initiate_e2e(const std::string &target, uint32_t proposed_epoch) {
     send_to_server_locked("@" + target + " " + payload);
 }
 
-// ---- background rekey timer --------------------------------------------
 static void rekey_timer_loop() {
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -181,7 +133,6 @@ static void rekey_timer_loop() {
     }
 }
 
-// ---- receiver thread ---------------------------------------------------
 static void receiver_loop(LineReader *reader) {
     std::string line;
     while (g_running) {

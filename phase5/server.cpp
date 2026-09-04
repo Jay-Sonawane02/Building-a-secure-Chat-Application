@@ -1,19 +1,3 @@
-// Phase 5 - server.cpp is BYTE-FOR-BYTE IDENTICAL to Phase 3.
-// The server never needs to know about E2E encryption -- it keeps routing
-// opaque @username-addressed payloads exactly as before. The __E2E_INIT__ /
-// __E2E_ACK__ / __E2E_MSG__ tags are meaningful only to the two clients.
-//
-// Phase 3 - Server Authentication via PKI
-//
-// Adds exactly two steps before the Phase 2 DH handshake, per connection:
-//   1. Server sends its CA-signed certificate.
-//   2. Client challenges with a nonce; server proves possession of the
-//      matching private key by signing it. (Client-side validation and
-//      the abort-on-failure logic live in client.cpp -- the server's job
-//      here is just to present its credentials honestly.)
-// Everything after that (DH handshake, encrypted registration+chat) is
-// byte-for-byte identical to Phase 2 -- see server.cpp there for the
-// relay logic comments.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>

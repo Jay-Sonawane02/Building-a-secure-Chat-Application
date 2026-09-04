@@ -1,14 +1,3 @@
-// Phase 3 - Server Authentication via PKI
-//
-// Adds exactly two steps before the Phase 2 DH handshake, per connection:
-//   1. Server sends its CA-signed certificate.
-//   2. Client challenges with a nonce; server proves possession of the
-//      matching private key by signing it. (Client-side validation and
-//      the abort-on-failure logic live in client.cpp -- the server's job
-//      here is just to present its credentials honestly.)
-// Everything after that (DH handshake, encrypted registration+chat) is
-// byte-for-byte identical to Phase 2 -- see server.cpp there for the
-// relay logic comments.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -82,13 +71,11 @@ static void handle_client(int fd, std::string peer_addr, const cert::X509Ptr &se
                            const cert::PKeyPtr &server_key) {
     LineReader reader{fd, ""};
 
-    // --- Step 1: present certificate, BEFORE any DH exchange ---
     if (!send_line(fd, "CERT " + cert::cert_to_wire(server_cert))) {
         close(fd);
         return;
     }
 
-    // --- Step 2: proof of possession -- sign the client's nonce challenge ---
     std::string nonce_line;
     if (!reader.recv_line(nonce_line) || nonce_line.rfind("NONCE ", 0) != 0) {
         log("Client " + peer_addr + " did not send a nonce challenge (unexpected)");
@@ -102,8 +89,6 @@ static void handle_client(int fd, std::string peer_addr, const cert::X509Ptr &se
         return;
     }
 
-    // --- From here on, identical to Phase 2: DH handshake, then the
-    //     encrypted registration + relay loop. ---
     handshake::Result hs;
     try {
         hs = handshake::do_handshake_speak_first(fd, reader, "server<-" + peer_addr);

@@ -1,16 +1,3 @@
-// Phase 1 - Baseline Chat Client (No Security)
-//
-// Implements the required command interface (spec 1.3):
-//   @username message   -> send to username, and select username as current peer
-//   /chat username       -> select username as current peer, no send
-//   /who                 -> ask server for online users
-//   /quit                 -> clean disconnect
-//   anything else         -> plain message to the currently selected peer
-//
-// Two threads: one reads stdin and sends to the server, the other
-// continuously reads from the socket and prints incoming messages, so
-// messages can arrive at any time without blocking on user input.
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -71,7 +58,6 @@ static void receiver_loop(int fd) {
         } else if (line.rfind("ERR", 0) == 0) {
             std::cout << "\n[server error] " << line.substr(4) << "\n> " << std::flush;
         } else if (line == "OK") {
-            // registration ack, nothing to print during normal operation
         } else {
             std::cout << "\n[server] " << line << "\n> " << std::flush;
         }
@@ -122,7 +108,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Wait for OK/ERR before entering the main loop.
     LineReader startup_reader{fd, ""};
     std::string ack;
     if (!startup_reader.recv_line(ack)) {
@@ -135,13 +120,8 @@ int main(int argc, char *argv[]) {
     }
     std::cout << "Connected as '" << username << "'. Commands: @user msg | /chat user | /who | /quit\n";
 
-    // Hand off any bytes already buffered by startup_reader (rare, but
-    // possible if the server sent more than just "OK\n" quickly) to the
-    // receiver thread by re-using the same underlying fd/buffer.
     std::thread receiver(receiver_loop, fd);
-    // Note: receiver_loop creates its own LineReader with an empty buffer;
-    // since registration only ever consumes exactly the "OK" line before
-    // anything else is sent, there is no leftover data to hand off here.
+
     receiver.detach();
 
     std::string current_peer;
@@ -172,7 +152,6 @@ int main(int argc, char *argv[]) {
         }
 
         if (line[0] == '@') {
-            // @username message  -- also updates current_peer
             size_t space = line.find(' ');
             if (space == std::string::npos) {
                 std::cout << "Usage: @username message\n> " << std::flush;
@@ -184,7 +163,6 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        // Plain text: goes to whichever peer is currently selected.
         if (current_peer.empty()) {
             std::cout << "No chat partner selected. Use /chat username or @username message\n> "
                        << std::flush;

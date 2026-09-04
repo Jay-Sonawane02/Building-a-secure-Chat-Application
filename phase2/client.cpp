@@ -1,10 +1,3 @@
-// Phase 2 - Client-Server Confidentiality via Diffie-Hellman (client side)
-//
-// Connects, performs a DH handshake (listens for the server's public value
-// first, then replies with its own -- see common/handshake.h), derives the
-// AES key, prints the verification fingerprint, then sends its username as
-// the FIRST encrypted line (registration is protected too, per spec 3.1).
-// Everything after that -- commands and chat -- is AES-GCM encrypted.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -46,7 +39,6 @@ static void receiver_loop(LineReader *reader, std::vector<uint8_t> key) {
         } else if (line.rfind("ERR", 0) == 0) {
             std::cout << "\n[server error] " << line.substr(4) << "\n> " << std::flush;
         } else if (line == "OK") {
-            // registration ack, nothing to print
         } else {
             std::cout << "\n[server] " << line << "\n> " << std::flush;
         }
@@ -122,12 +114,6 @@ int main(int argc, char *argv[]) {
     std::cout << "Connected as '" << username
               << "' (encrypted). Commands: @user msg | /chat user | /who | /quit\n";
 
-    // NOTE: this thread is joined (not detached) before main() returns --
-    // it holds a pointer to `reader`, a stack-local object. Detaching here
-    // would risk the receiver thread still using `reader` after main's
-    // stack frame is gone the moment the user quits. See the join() +
-    // shutdown() sequence at the bottom of main() for how we cleanly
-    // unblock it first.
     std::thread receiver(receiver_loop, &reader, hs.key);
 
     std::string current_peer;
@@ -177,9 +163,7 @@ int main(int argc, char *argv[]) {
                                  "@" + current_peer + " " + line);
         std::cout << "> " << std::flush;
     }
-
-    // Unblock the receiver thread's pending recv() call, then wait for it
-    // to fully exit before this stack frame (and `reader`) goes away.
+    
     g_running = false;
     shutdown(fd, SHUT_RDWR);
     receiver.join();

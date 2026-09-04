@@ -1,10 +1,3 @@
-// Phase 3 - Server Authentication via PKI (client side)
-//
-// Before any DH exchange: receive the server's certificate, validate it
-// against our trusted ca.crt (signature chain, validity period, identity),
-// then challenge the server to prove it holds the matching private key.
-// If ANY check fails, we abort immediately -- no nonce sent, no DH public
-// value sent, no username, nothing -- per spec 4.1's explicit requirement.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/bn.h>
@@ -27,9 +20,6 @@ static const char *EXPECTED_SERVER_CN = "chatserver.local";
 
 static std::atomic<bool> g_running{true};
 
-// 16 random bytes for the proof-of-possession challenge nonce. Reuses
-// BN_rand (already an approved primitive via bn.h, same as the DH module)
-// rather than pulling in a separate RNG header.
 static std::vector<uint8_t> random_nonce(int num_bytes) {
     BIGNUM *r = BN_new();
     BN_rand(r, num_bytes * 8, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY);
@@ -106,7 +96,6 @@ int main(int argc, char *argv[]) {
     }
     LineReader reader{fd, ""};
 
-    // --- Step 1: receive and validate the server's certificate ---
     std::string cert_line;
     if (!reader.recv_line(cert_line) || cert_line.rfind("CERT ", 0) != 0) {
         std::cerr << "ABORT: server did not present a certificate as the first "
@@ -130,13 +119,12 @@ int main(int argc, char *argv[]) {
                   << "\n";
         std::cerr << "No nonce, no DH public value, no password, and no username "
                      "were sent. Connection closed immediately.\n";
-        close(fd);  // no further data sent, per spec 4.1
+        close(fd);  
         return 1;
     }
     std::cout << "Certificate validated: CN=" << cert::get_common_name(server_cert)
               << ", signed by trusted CA, within validity period.\n";
 
-    // --- Step 2: proof of possession -- challenge the server ---
     std::vector<uint8_t> nonce = random_nonce(16);
     if (!send_line(fd, "NONCE " + base64::encode(nonce))) {
         std::cerr << "Failed to send proof-of-possession challenge.\n";
@@ -162,7 +150,6 @@ int main(int argc, char *argv[]) {
     std::cout << "Proof-of-possession verified: server controls the private key "
                  "matching its certificate.\n";
 
-    // --- From here on, identical to Phase 2 ---
     handshake::Result hs;
     try {
         hs = handshake::do_handshake_listen_first(fd, reader, "client");

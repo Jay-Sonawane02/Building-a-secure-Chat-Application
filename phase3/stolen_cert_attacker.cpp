@@ -1,21 +1,3 @@
-// Phase 3 - Stolen Certificate Without Private Key (spec 4.2, separate test)
-//
-// Simulates an attacker who obtained a copy of the REAL server.crt file
-// (e.g. read off disk, downloaded, whatever) but does NOT have the matching
-// server.key. This program presents the genuine, validly-signed
-// server.crt -- which will PASS the client's certificate validation
-// completely, since it really is CA-signed, unexpired, and has the right
-// CN -- but then fails proof-of-possession, because it signs the client's
-// challenge with a DIFFERENT private key (wrong_key.key) that doesn't
-// match the public key embedded in server.crt.
-//
-// This demonstrates precisely why certificate validation ALONE is not
-// enough (spec's stated learning objective): possessing a valid cert file
-// proves nothing about who's on the live connection right now.
-//
-// Usage: ./stolen_cert_attacker <listen_port>
-// Requires server.crt (the genuine one, copied/stolen) and wrong_key.key
-// (any private key that is NOT server.key) in the current directory.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -98,15 +80,12 @@ int main(int argc, char *argv[]) {
             "challenge, as expected (the cert itself really is valid).");
 
         std::vector<uint8_t> nonce = base64::decode(nonce_line.substr(6));
-        // Sign with the WRONG key -- this is the actual attack failure point.
         std::vector<uint8_t> bogus_signature = cert::sign_challenge(wrong_key, nonce);
         send_line(victim_fd, "PROOF " + base64::encode(bogus_signature));
         log("Sent a signature produced with the WRONG private key. The client "
             "should now detect that this signature does not verify against the "
             "certificate's actual public key, and abort.");
 
-        // If the client is implemented correctly, it will simply close the
-        // connection here without sending anything further (no DH value).
         std::string next_line;
         if (!reader.recv_line(next_line)) {
             log("*** CLIENT DISCONNECTED after the bad signature. Proof-of-"

@@ -1,17 +1,3 @@
-// Phase 2 - Client-Server Confidentiality via Diffie-Hellman
-//
-// Same relay logic as Phase 1, but every connection now starts with an
-// independent DH handshake (server speaks first, sending its DH public
-// value before anything else -- no plaintext chat data ever crosses the
-// wire). C1<->S and C2<->S each get their OWN handshake with fresh random
-// exponents; there is no shared secret between C1 and C2 at this phase.
-//
-// After the handshake, everything -- including the username
-// registration line -- is AES-GCM encrypted. The server can still read
-// every message's plaintext internally (Phase 2 only protects the network
-// link, not the server itself; that's Phase 4's job), and relays between
-// clients by decrypting with the sender's key and re-encrypting with the
-// recipient's key, since each client has an independent session key.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -34,8 +20,8 @@ static const int DEFAULT_PORT = 5000;
 
 struct ClientInfo {
     int fd;
-    std::vector<uint8_t> key;   // this client's session key with the server
-    uint64_t send_counter = 0;  // server->client nonce counter for this link
+    std::vector<uint8_t> key;   
+    uint64_t send_counter = 0;  
 };
 
 static std::map<std::string, ClientInfo> g_clients;
@@ -65,8 +51,6 @@ static void unregister_client(const std::string &username) {
     g_clients.erase(username);
 }
 
-// Sends `plaintext` to `target_username`, encrypted under THAT client's own
-// session key (not the sender's) -- each link is independently keyed.
 static bool relay_to(const std::string &target_username, const std::string &plaintext) {
     std::lock_guard<std::mutex> lock(g_clients_mutex);
     auto it = g_clients.find(target_username);
@@ -87,7 +71,6 @@ static std::string who_list() {
 static void handle_client(int fd, std::string peer_addr) {
     LineReader reader{fd, ""};
 
-    // --- DH handshake: server speaks first ---
     handshake::Result hs;
     try {
         hs = handshake::do_handshake_speak_first(fd, reader, "server<-" + peer_addr);
@@ -96,9 +79,8 @@ static void handle_client(int fd, std::string peer_addr) {
         close(fd);
         return;
     }
-    uint64_t send_counter = 0;  // this connection's server->client counter
+    uint64_t send_counter = 0;  
 
-    // --- encrypted registration: first encrypted line is the username ---
     std::string username;
     auto rr = channel::recv_encrypted(reader, hs.key, username);
     if (rr != channel::RecvResult::OK || username.empty()) {
@@ -121,10 +103,6 @@ static void handle_client(int fd, std::string peer_addr) {
         auto res = channel::recv_encrypted(reader, hs.key, line);
         if (res == channel::RecvResult::DISCONNECTED) break;
         if (res == channel::RecvResult::TAMPER_DETECTED) {
-            // This is the tamper-detection path in live operation: a
-            // corrupted/tampered ciphertext fails the GCM tag check and we
-            // simply drop it rather than processing garbage. See
-            // tamper_test.cpp for a controlled, isolated demonstration.
             log("[TAMPER DETECTED] rejected corrupted message from " + username);
             continue;
         }
@@ -156,11 +134,7 @@ static void handle_client(int fd, std::string peer_addr) {
             }
             std::string target = line.substr(1, space - 1);
             std::string message = line.substr(space + 1);
-
-            // Verification point: the server can still read this in full,
-            // since it decrypted the sender's link independently -- this is
-            // expected/documented Phase 2 behaviour (link security, not
-            // end-to-end). Phase 4 is what hides this from the server.
+er.
             log("[RELAY] " + username + " -> " + target + ": " + message);
 
             if (!relay_to(target, "MSG " + username + " " + message)) {
