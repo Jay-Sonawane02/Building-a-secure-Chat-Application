@@ -1,62 +1,241 @@
-#include <iostream>
-#include <string>
-#include <cstring>
-#include <unistd.h>
+// Phase 5 - server.cpp is BYTE-FOR-BYTE IDENTICAL to Phase 3.
+// The server never needs to know about E2E encryption -- it keeps routing
+// opaque @username-addressed payloads exactly as before. The __E2E_INIT__ /
+// __E2E_ACK__ / __E2E_MSG__ tags are meaningful only to the two clients.
+//
+// Phase 3 - Server Authentication via PKI
+//
+// Adds exactly two steps before the Phase 2 DH handshake, per connection:
+//   1. Server sends its CA-signed certificate.
+//   2. Client challenges with a nonce; server proves possession of the
+//      matching private key by signing it. (Client-side validation and
+//      the abort-on-failure logic live in client.cpp -- the server's job
+//      here is just to present its credentials honestly.)
+// Everything after that (DH handshake, encrypted registration+chat) is
+// byte-for-byte identical to Phase 2 -- see server.cpp there for the
+// relay logic comments.
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
-#define PORT 8080
+#include <cstring>
+#include <ctime>
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
 
-int main() {
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#include "../common/cert_utils.h"
+#include "../common/crypto_channel.h"
+#include "../common/framing.h"
+#include "../common/handshake.h"
 
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
+static const int DEFAULT_PORT = 5000;
+static const char *SERVER_CERT_PATH = "server.crt";
+static const char *SERVER_KEY_PATH = "server.key";
 
-    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
-    listen(server_fd, 2);
-    std::cout << "Server running on port " << PORT << "\n";
+struct ClientInfo {
+    int fd;
+    std::vector<uint8_t> key;
+    uint64_t send_counter = 0;
+};
 
-    int client_sockets[2];
-    std::string client_names[2];
+static std::map<std::string, ClientInfo> g_clients;
+static std::mutex g_clients_mutex;
 
-    for (int i = 0; i < 2; i++) {
-        client_sockets[i] = accept(server_fd, nullptr, nullptr);
-        char buf[256] = {0};
-        read(client_sockets[i], buf, sizeof(buf));
-        client_names[i] = std::string(buf);
-        std::cout << "Client connected: " << client_names[i] << "\n";
+static std::string timestamp() {
+    std::time_t t = std::time(nullptr);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
+    return std::string(buf);
+}
+static void log(const std::string &msg) {
+    std::cout << "[" << timestamp() << "] " << msg << std::endl;
+}
+
+static bool register_client(const std::string &username, int fd,
+                             const std::vector<uint8_t> &key) {
+    std::lock_guard<std::mutex> lock(g_clients_mutex);
+    if (g_clients.count(username)) return false;
+    g_clients[username] = ClientInfo{fd, key, 0};
+    return true;
+}
+static void unregister_client(const std::string &username) {
+    std::lock_guard<std::mutex> lock(g_clients_mutex);
+    g_clients.erase(username);
+}
+static bool relay_to(const std::string &target_username, const std::string &plaintext) {
+    std::lock_guard<std::mutex> lock(g_clients_mutex);
+    auto it = g_clients.find(target_username);
+    if (it == g_clients.end()) return false;
+    return channel::send_encrypted(it->second.fd, it->second.key,
+                                    channel::SERVER_TO_CLIENT,
+                                    it->second.send_counter, plaintext);
+}
+static std::string who_list() {
+    std::lock_guard<std::mutex> lock(g_clients_mutex);
+    std::ostringstream oss;
+    oss << "WHOLIST";
+    for (auto &kv : g_clients) oss << " " << kv.first;
+    return oss.str();
+}
+
+static void handle_client(int fd, std::string peer_addr, const cert::X509Ptr &server_cert,
+                           const cert::PKeyPtr &server_key) {
+    LineReader reader{fd, ""};
+
+    // --- Step 1: present certificate, BEFORE any DH exchange ---
+    if (!send_line(fd, "CERT " + cert::cert_to_wire(server_cert))) {
+        close(fd);
+        return;
     }
 
-    fd_set readfds;
+    // --- Step 2: proof of possession -- sign the client's nonce challenge ---
+    std::string nonce_line;
+    if (!reader.recv_line(nonce_line) || nonce_line.rfind("NONCE ", 0) != 0) {
+        log("Client " + peer_addr + " did not send a nonce challenge (unexpected)");
+        close(fd);
+        return;
+    }
+    std::vector<uint8_t> nonce_bytes = base64::decode(nonce_line.substr(6));
+    std::vector<uint8_t> signature = cert::sign_challenge(server_key, nonce_bytes);
+    if (!send_line(fd, "PROOF " + base64::encode(signature))) {
+        close(fd);
+        return;
+    }
+
+    // --- From here on, identical to Phase 2: DH handshake, then the
+    //     encrypted registration + relay loop. ---
+    handshake::Result hs;
+    try {
+        hs = handshake::do_handshake_speak_first(fd, reader, "server<-" + peer_addr);
+    } catch (const std::exception &e) {
+        log("Handshake failed with " + peer_addr + ": " + e.what());
+        close(fd);
+        return;
+    }
+    uint64_t send_counter = 0;
+
+    std::string username;
+    auto rr = channel::recv_encrypted(reader, hs.key, username);
+    if (rr != channel::RecvResult::OK || username.empty()) {
+        close(fd);
+        return;
+    }
+    if (!register_client(username, fd, hs.key)) {
+        channel::send_encrypted(fd, hs.key, channel::SERVER_TO_CLIENT, send_counter,
+                                 "ERR username_taken");
+        close(fd);
+        log("Rejected duplicate username '" + username + "' from " + peer_addr);
+        return;
+    }
+    channel::send_encrypted(fd, hs.key, channel::SERVER_TO_CLIENT, send_counter, "OK");
+    log("Client connected: " + username + " (" + peer_addr + ") fingerprint=" +
+        hs.fingerprint + " [cert+PoP verified by client before this handshake]");
+
+    std::string line;
     while (true) {
-        FD_ZERO(&readfds);
-        int max_sd = client_sockets[0] > client_sockets[1] ? client_sockets[0] : client_sockets[1];
-        FD_SET(client_sockets[0], &readfds);
-        FD_SET(client_sockets[1], &readfds);
-
-        select(max_sd + 1, &readfds, nullptr, nullptr, nullptr);
-
-        for (int i = 0; i < 2; i++) {
-            if (FD_ISSET(client_sockets[i], &readfds)) {
-                char buffer[1024] = {0};
-                int valread = read(client_sockets[i], buffer, sizeof(buffer));
-                if (valread <= 0) {
-                    close(client_sockets[i]);
-                    return 0;
-                }
-                std::cout << "[Relay] " << client_names[i] << ": " << buffer << "\n";
-                
-                // Forward message to the other client
-                int target_idx = 1 - i;
-                std::string msg = "@" + client_names[i] + " " + std::string(buffer);
-                send(client_sockets[target_idx], msg.c_str(), msg.length(), 0);
-            }
+        auto res = channel::recv_encrypted(reader, hs.key, line);
+        if (res == channel::RecvResult::DISCONNECTED) break;
+        if (res == channel::RecvResult::TAMPER_DETECTED) {
+            log("[TAMPER DETECTED] rejected corrupted message from " + username);
+            continue;
         }
+        if (res == channel::RecvResult::MALFORMED) continue;
+        if (line.empty()) continue;
+
+        if (line == "/quit") {
+            log("[CMD] " + username + " -> /quit");
+            break;
+        }
+        if (line == "/who") {
+            log("[CMD] " + username + " -> /who");
+            std::lock_guard<std::mutex> lock(g_clients_mutex);
+            auto it = g_clients.find(username);
+            if (it != g_clients.end()) {
+                channel::send_encrypted(fd, hs.key, channel::SERVER_TO_CLIENT,
+                                         it->second.send_counter, who_list());
+            }
+            continue;
+        }
+        if (line[0] == '@') {
+            size_t space = line.find(' ');
+            if (space == std::string::npos) {
+                channel::send_encrypted(fd, hs.key, channel::SERVER_TO_CLIENT,
+                                         send_counter, "ERR malformed_message");
+                continue;
+            }
+            std::string target = line.substr(1, space - 1);
+            std::string message = line.substr(space + 1);
+            log("[RELAY] " + username + " -> " + target + ": " + message);
+            if (!relay_to(target, "MSG " + username + " " + message)) {
+                std::lock_guard<std::mutex> lock(g_clients_mutex);
+                auto it = g_clients.find(username);
+                if (it != g_clients.end()) {
+                    channel::send_encrypted(fd, hs.key, channel::SERVER_TO_CLIENT,
+                                             it->second.send_counter,
+                                             "ERR user_not_found " + target);
+                }
+            }
+            continue;
+        }
+        std::lock_guard<std::mutex> lock(g_clients_mutex);
+        auto it = g_clients.find(username);
+        if (it != g_clients.end()) {
+            channel::send_encrypted(fd, hs.key, channel::SERVER_TO_CLIENT,
+                                     it->second.send_counter, "ERR unknown_command");
+        }
+    }
+
+    unregister_client(username);
+    close(fd);
+    log("Client disconnected: " + username);
+}
+
+int main(int argc, char *argv[]) {
+    int port = argc > 1 ? std::atoi(argv[1]) : DEFAULT_PORT;
+
+    cert::X509Ptr server_cert;
+    cert::PKeyPtr server_key;
+    try {
+        server_cert = cert::load_cert_from_file(SERVER_CERT_PATH);
+        server_key = cert::load_private_key_from_file(SERVER_KEY_PATH);
+    } catch (const std::exception &e) {
+        std::cerr << "Failed to load server certificate/key: " << e.what() << "\n";
+        std::cerr << "Run setup_ca.sh first to generate " << SERVER_CERT_PATH
+                  << " and " << SERVER_KEY_PATH << ".\n";
+        return 1;
+    }
+
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
+    if (bind(listen_fd, (sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind");
+        return 1;
+    }
+    listen(listen_fd, 8);
+    log("Phase 3 chat server (PKI + DH + AES-GCM) listening on port " +
+        std::to_string(port));
+
+    while (true) {
+        sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(listen_fd, (sockaddr *)&client_addr, &client_len);
+        if (client_fd < 0) continue;
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
+        std::string peer = std::string(ip) + ":" + std::to_string(ntohs(client_addr.sin_port));
+        std::thread(handle_client, client_fd, peer, std::cref(server_cert),
+                    std::cref(server_key))
+            .detach();
     }
     return 0;
 }
