@@ -20,16 +20,6 @@ alone doesn't authenticate who you're talking to.
 - `tamper_test.cpp` — standalone AES-GCM tamper-detection demonstration
 - `mallory_proxy.cpp` — the MITM attack proxy
 
-## A note on "implement DH from scratch" (TA clarification)
-
-Per TA clarification: functions with **"DH" or "Diffie-Hellman" in the
-name** (`DH_generate_key`, `DH_compute_key`, `EVP_PKEY_derive` used for DH,
-anything from `<openssl/dh.h>`) are **not allowed** — those run the whole
-exchange for you. `BN_mod_exp` **is allowed** — it's a generic bignum
-primitive, not DH-specific. This code writes the actual DH protocol logic
-itself (exponent generation, exchange sequencing, shared-secret derivation)
-using `BN_mod_exp` as the underlying arithmetic operation, which is exactly
-what's expected.
 
 ## Build (on every VM: Server, Client1, Client2, Mallory)
 
@@ -39,7 +29,6 @@ g++ -std=c++17 -pthread -Wall -Wextra -o client client.cpp -lssl -lcrypto
 g++ -std=c++17 -pthread -Wall -Wextra -o tamper_test tamper_test.cpp -lssl -lcrypto
 g++ -std=c++17 -pthread -Wall -Wextra -o mallory_proxy mallory_proxy.cpp -lssl -lcrypto
 ```
-(You only need `mallory_proxy` compiled on the Mallory VM, but it's harmless to build everywhere.)
 
 ## Run — normal operation (Server = 192.168.56.10, C1 = .11, C2 = .12)
 
@@ -62,16 +51,13 @@ Verify this fingerprint matches the server's log for your connection: 9f74c3ef..
 ```
 Cross-check that value against the server's own log line for that
 connection (`[server<-<ip:port>] DH handshake complete. Key fingerprint:
-...`) — **spec 3.2 requires showing these match**. Screenshot both side by
-side.
+...`) — **spec 3.2 requires showing these match**. 
 
 ## Verification 1 — Wireshark re-capture (spec 3.2)
 
 Repeat the exact same tcpdump/Wireshark process from Phase 1, on the same
 port. This time, "Follow → TCP Stream" should show only random-looking
-base64 ciphertext — no readable usernames or message text. Screenshot this
-next to your Phase 1 plaintext screenshot for a direct before/after
-contrast.
+base64 ciphertext — no readable usernames or message text. 
 
 ## Verification 2 — Tamper detection test (spec 3.2)
 
@@ -84,12 +70,6 @@ rather than producing corrupted output. You can also pass your own message:
 ```bash
 ./tamper_test "some other test string"
 ```
-Screenshot the output — it shows the unmodified ciphertext decrypting
-successfully, then the tampered version being rejected. The live
-server/client also silently reject tampered messages in normal operation
-(logged as `[TAMPER DETECTED]` on the server, or `[SECURITY] ... discarded`
-on the client) — this standalone test isolates the property for a clean,
-readable report screenshot.
 
 ## Verification 3 — MITM attack (spec 3.3, run on Mallory VM = 192.168.56.13)
 
@@ -131,27 +111,9 @@ Then from alice's prompt: `@bob top secret message`
   message`) — the attack is fully transparent; nothing breaks or looks
   wrong on either legitimate side.
 
-Screenshot all three terminals (victim, Mallory, real server) side by
-side — this is your core Phase 2 attack evidence.
 
-## Report notes to include
 
-- **Why hash the shared secret before using it as a key** (spec 3.1): the
-  raw DH output `g^(ab) mod p` isn't uniformly distributed over the AES key
-  space — it has mathematical structure inherited from modular
-  exponentiation. `SHA256(shared_secret)` collapses it into a uniformly
-  distributed, fixed-length key. This is standard KDF practice.
-- **Why the victim can't detect the MITM from inside the protocol**: the
-  fingerprint check the victim performs *correctly* matches what "the
-  server" (actually Mallory) computed, because Mallory really did complete
-  a legitimate DH exchange with the victim — there's no cryptographic
-  anomaly visible from either endpoint's perspective. The only way to catch
-  this is out-of-band verification (e.g., reading fingerprints aloud over a
-  trusted side channel), which essentially nobody does in practice. This is
-  exactly the gap Phase 3's certificates close.
-- **Independent exchanges**: C1↔S and C2↔S each get their own DH exchange
-  with separate random exponents — confirmed by the differing fingerprints
-  in the server log for each connection.
+
 - **Nonce construction**: since one DH exchange produces a single key used
   bidirectionally, nonces are tagged with a 1-byte role marker
   (client→server vs server→client) to guarantee the two directions can
