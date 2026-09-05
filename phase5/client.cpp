@@ -86,7 +86,7 @@ static bool send_to_server_locked(const std::string &plaintext) {
     return channel::send_encrypted(g_fd, g_server_key, channel::CLIENT_TO_SERVER,
                                     g_server_send_counter, plaintext);
 }
-.
+
 static void destroy_key(std::vector<uint8_t> &key) {
     if (!key.empty()) {
         OPENSSL_cleanse(key.data(), key.size());

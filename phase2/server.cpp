@@ -134,7 +134,6 @@ static void handle_client(int fd, std::string peer_addr) {
             }
             std::string target = line.substr(1, space - 1);
             std::string message = line.substr(space + 1);
-er.
             log("[RELAY] " + username + " -> " + target + ": " + message);
 
             if (!relay_to(target, "MSG " + username + " " + message)) {

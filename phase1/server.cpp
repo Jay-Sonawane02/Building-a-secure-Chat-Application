@@ -128,7 +128,6 @@ static void handle_client(int fd, std::string peer_addr) {
             }
             std::string target = line.substr(1, space - 1);
             std::string message = line.substr(space + 1);
-.
             log("[RELAY] " + username + " -> " + target + ": " + message);
 
             int target_fd = lookup_fd(target);
